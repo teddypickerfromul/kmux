@@ -39,6 +39,8 @@ constexpr auto LegacyHookTrustBegin = "# konsole-codex-hook-trust begin";
 constexpr auto LegacyHookTrustEnd = "# konsole-codex-hook-trust end";
 constexpr auto CodexAgentName = "codex";
 constexpr auto ClaudeAgentName = "claude";
+constexpr auto OpenCodeAgentName = "opencode";
+constexpr auto OpenCodePluginMarker = "// kmux-opencode-plugin v1";
 
 struct HookEvent {
     QString eventName;
@@ -123,6 +125,21 @@ QString claudeHome(const QString &overridePath)
     }
 
     return QDir(homePath()).filePath(QStringLiteral(".claude"));
+}
+
+QString opencodeHome(const QString &overridePath)
+{
+    if (!overridePath.isEmpty()) {
+        return QFileInfo(overridePath).absoluteFilePath();
+    }
+
+    const QString envPath = qEnvironmentVariable("OPENCODE_CONFIG_DIR");
+    if (!envPath.isEmpty()) {
+        return QFileInfo(envPath).absoluteFilePath();
+    }
+
+    const QString configRoot = QStandardPaths::writableLocation(QStandardPaths::GenericConfigLocation);
+    return QDir(configRoot.isEmpty() ? QDir(homePath()).filePath(QStringLiteral(".config")) : configRoot).filePath(QStringLiteral("opencode"));
 }
 
 class HookTransactionLock
@@ -1272,6 +1289,213 @@ int statusClaudeHooks(const QString &claudeHomeOverride)
     printHookInstallationStatus(out, status, scriptDirectory);
     return status.groups == ClaudeHookEvents.size() && status.handlers == ClaudeHookEvents.size() && status.executableHandlers == status.handlers ? 0 : 1;
 }
+
+QString opencodePluginDirectory(const QString &configDir)
+{
+    return QDir(configDir).filePath(QStringLiteral("plugins"));
+}
+
+QString opencodePluginPath(const QString &configDir)
+{
+    return QDir(opencodePluginDirectory(configDir)).filePath(QStringLiteral("kmux-opencode.js"));
+}
+
+QString legacyOpencodePluginPath(const QString &configDir)
+{
+    return QDir(configDir).filePath(QStringLiteral("plugin/kmux-opencode.js"));
+}
+
+// Embeds a filesystem path in the generated JavaScript as a double-quoted
+// string literal.
+QString jsStringLiteral(const QString &value)
+{
+    QString escaped;
+    escaped.reserve(value.size() + 2);
+    escaped += QLatin1Char('"');
+    for (const QChar ch : value) {
+        switch (ch.unicode()) {
+        case '\\':
+            escaped += QStringLiteral("\\\\");
+            break;
+        case '"':
+            escaped += QStringLiteral("\\\"");
+            break;
+        case '\n':
+            escaped += QStringLiteral("\\n");
+            break;
+        case '\r':
+            escaped += QStringLiteral("\\r");
+            break;
+        case u'\u2028':
+            escaped += QStringLiteral("\\u2028");
+            break;
+        case u'\u2029':
+            escaped += QStringLiteral("\\u2029");
+            break;
+        default:
+            escaped += ch;
+            break;
+        }
+    }
+    escaped += QLatin1Char('"');
+    return escaped;
+}
+
+// Reports the generic event names that Kmux's turn model already understands:
+// UserPromptSubmit begins a turn, tool events keep it running, a permission
+// request pauses it, and session idle or error ends it. opencode runs plugins
+// in its own process, so the child helper inherits the terminal environment
+// and reaches Kmux through that tab's session.
+QString opencodePluginContent()
+{
+    const QString helper = projectStatusHelperPath();
+
+    return QStringLiteral(
+               "%1\n"
+               "const HELPER = process.env.KMUX_PROJECT_STATUS_EXECUTABLE || %2;\n"
+               "\n"
+               "function report(event, status, sessionId) {\n"
+               "  const args = [HELPER, \"--hook-output\", \"--agent\", \"opencode\", \"--event\", event];\n"
+               "  const agentPid = process.env.KMUX_OPENCODE_PID;\n"
+               "  if (agentPid) {\n"
+               "    args.push(\"--agent-pid\", String(agentPid));\n"
+               "  }\n"
+               "  args.push(status);\n"
+               "  try {\n"
+               "    const child = Bun.spawn(args, { stdin: \"pipe\", stdout: \"ignore\", stderr: \"ignore\", env: process.env });\n"
+               "    child.stdin.write(JSON.stringify({ session_id: sessionId || \"\" }));\n"
+               "    child.stdin.end();\n"
+               "    child.exited.catch(() => {});\n"
+               "  } catch {}\n"
+               "}\n"
+               "\n"
+               "export default async () => ({\n"
+               "  event: async ({ event }) => {\n"
+               "    const sessionId = event.properties ? event.properties.sessionID : undefined;\n"
+               "    switch (event.type) {\n"
+               "      case \"session.idle\":\n"
+               "        report(\"Stop\", \"idle\", sessionId);\n"
+               "        break;\n"
+               "      case \"session.error\":\n"
+               "        report(\"StopFailure\", \"idle\", sessionId);\n"
+               "        break;\n"
+               "      case \"permission.asked\":\n"
+               "      case \"permission.updated\":\n"
+               "        report(\"PermissionRequest\", \"needsInput\", sessionId);\n"
+               "        break;\n"
+               "      case \"permission.replied\":\n"
+               "        report(\"PermissionReplied\", \"running\", sessionId);\n"
+               "        break;\n"
+               "      case \"question.asked\":\n"
+               "        report(\"QuestionAsked\", \"needsInput\", sessionId);\n"
+               "        break;\n"
+               "      case \"question.replied\":\n"
+               "      case \"question.rejected\":\n"
+               "        report(\"QuestionReplied\", \"running\", sessionId);\n"
+               "        break;\n"
+               "    }\n"
+               "  },\n"
+               "  \"chat.message\": async (input) => {\n"
+               "    report(\"UserPromptSubmit\", \"running\", input.sessionID);\n"
+               "  },\n"
+               "  \"tool.execute.before\": async (input) => {\n"
+               "    report(\"PreToolUse\", \"running\", input.sessionID);\n"
+               "  },\n"
+               "  \"tool.execute.after\": async (input) => {\n"
+               "    report(\"PostToolUse\", \"running\", input.sessionID);\n"
+               "  },\n"
+               "});\n")
+        .arg(QString::fromLatin1(OpenCodePluginMarker), jsStringLiteral(helper));
+}
+
+bool opencodePluginInstalled(const QString &path)
+{
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly)) {
+        return false;
+    }
+    return file.readAll().contains(OpenCodePluginMarker);
+}
+
+int installOpenCodeHooks(const QString &opencodeHomeOverride, bool quiet)
+{
+    QTextStream out(stdout);
+    QTextStream err(stderr);
+    QString error;
+
+    const QString configDir = opencodeHome(opencodeHomeOverride);
+    HookTransactionLock transactionLock(QString::fromLatin1(OpenCodeAgentName), configDir);
+    if (!transactionLock.acquire(&error)) {
+        err << error << '\n';
+        return 1;
+    }
+    if (!QDir().mkpath(opencodePluginDirectory(configDir))) {
+        err << "Could not create " << opencodePluginDirectory(configDir) << '\n';
+        return 1;
+    }
+
+    const QString pluginPath = opencodePluginPath(configDir);
+    if (!writeTextFileAtomically(pluginPath, opencodePluginContent(), &error)) {
+        err << error << '\n';
+        return 1;
+    }
+
+    const QString legacyPath = legacyOpencodePluginPath(configDir);
+    if (opencodePluginInstalled(legacyPath) && !QFile::remove(legacyPath)) {
+        err << "Could not remove " << legacyPath << '\n';
+        return 1;
+    }
+
+    if (!quiet) {
+        out << "Installed the Kmux opencode plugin at " << pluginPath << '\n';
+    }
+    return 0;
+}
+
+int uninstallOpenCodeHooks(const QString &opencodeHomeOverride)
+{
+    QTextStream out(stdout);
+    QTextStream err(stderr);
+
+    const QString configDir = opencodeHome(opencodeHomeOverride);
+    QString error;
+    HookTransactionLock transactionLock(QString::fromLatin1(OpenCodeAgentName), configDir);
+    if (!transactionLock.acquire(&error)) {
+        err << error << '\n';
+        return 1;
+    }
+
+    int removed = 0;
+    for (const QString &path : {opencodePluginPath(configDir), legacyOpencodePluginPath(configDir)}) {
+        if (!opencodePluginInstalled(path)) {
+            continue;
+        }
+        if (!QFile::remove(path)) {
+            err << "Could not remove " << path << '\n';
+            return 1;
+        }
+        ++removed;
+        QDir().rmdir(QFileInfo(path).absolutePath());
+    }
+
+    out << "Removed " << removed << " Kmux opencode plugin file(s) from " << configDir << '\n';
+    return 0;
+}
+
+int statusOpenCodeHooks(const QString &opencodeHomeOverride)
+{
+    QTextStream out(stdout);
+    const QString configDir = opencodeHome(opencodeHomeOverride);
+    const QString pluginPath = opencodePluginPath(configDir);
+    const QString helper = projectStatusHelperPath();
+    const bool pluginInstalled = opencodePluginInstalled(pluginPath);
+    const bool helperExecutable = QFileInfo(helper).isExecutable();
+
+    out << "opencode home: " << configDir << '\n';
+    out << "plugin: " << pluginPath << (pluginInstalled ? QStringLiteral(" installed") : QStringLiteral(" missing")) << '\n';
+    out << "status helper: " << helper << (helperExecutable ? QStringLiteral(" executable") : QStringLiteral(" not found")) << '\n';
+    return pluginInstalled && helperExecutable ? 0 : 1;
+}
 }
 
 int main(int argc, char **argv)
@@ -1295,8 +1519,12 @@ int main(int argc, char **argv)
                                               QStringLiteral("Use a custom Claude Code config directory instead of ~/.claude."),
                                               QStringLiteral("path"));
     parser.addOption(claudeHomeOption);
+    const QCommandLineOption opencodeHomeOption(QStringLiteral("opencode-home"),
+                                                QStringLiteral("Use a custom opencode config directory instead of OPENCODE_CONFIG_DIR or ~/.config/opencode."),
+                                                QStringLiteral("path"));
+    parser.addOption(opencodeHomeOption);
     parser.addPositionalArgument(QStringLiteral("command"), QStringLiteral("install, uninstall, or status."));
-    parser.addPositionalArgument(QStringLiteral("agent"), QStringLiteral("Agent name: codex or claude."));
+    parser.addPositionalArgument(QStringLiteral("agent"), QStringLiteral("Agent name: codex, claude, or opencode."));
     parser.process(app);
 
     const QStringList args = parser.positionalArguments();
@@ -1306,8 +1534,8 @@ int main(int argc, char **argv)
 
     const QString command = args.at(0);
     const QString agent = args.at(1);
-    if (agent != QLatin1String(CodexAgentName) && agent != QLatin1String(ClaudeAgentName)) {
-        QTextStream(stderr) << "Supported agents are: codex, claude.\n";
+    if (agent != QLatin1String(CodexAgentName) && agent != QLatin1String(ClaudeAgentName) && agent != QLatin1String(OpenCodeAgentName)) {
+        QTextStream(stderr) << "Supported agents are: codex, claude, opencode.\n";
         return 2;
     }
 
@@ -1315,17 +1543,26 @@ int main(int argc, char **argv)
         if (agent == QLatin1String(CodexAgentName)) {
             return installCodexHooks(parser.value(codexHomeOption), parser.isSet(quietOption));
         }
+        if (agent == QLatin1String(OpenCodeAgentName)) {
+            return installOpenCodeHooks(parser.value(opencodeHomeOption), parser.isSet(quietOption));
+        }
         return installClaudeHooks(parser.value(claudeHomeOption), parser.isSet(quietOption));
     }
     if (command == QLatin1String("uninstall")) {
         if (agent == QLatin1String(CodexAgentName)) {
             return uninstallCodexHooks(parser.value(codexHomeOption));
         }
+        if (agent == QLatin1String(OpenCodeAgentName)) {
+            return uninstallOpenCodeHooks(parser.value(opencodeHomeOption));
+        }
         return uninstallClaudeHooks(parser.value(claudeHomeOption));
     }
     if (command == QLatin1String("status")) {
         if (agent == QLatin1String(CodexAgentName)) {
             return statusCodexHooks(parser.value(codexHomeOption));
+        }
+        if (agent == QLatin1String(OpenCodeAgentName)) {
+            return statusOpenCodeHooks(parser.value(opencodeHomeOption));
         }
         return statusClaudeHooks(parser.value(claudeHomeOption));
     }

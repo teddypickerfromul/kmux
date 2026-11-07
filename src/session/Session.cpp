@@ -1275,7 +1275,8 @@ void Session::prependKmuxAgentShimsToPath()
 
     const QString shimDirectory = kmuxAgentShimDirectory();
     const bool hasAgentShim = QFileInfo(QDir(shimDirectory).filePath(QStringLiteral("codex"))).isExecutable()
-        || QFileInfo(QDir(shimDirectory).filePath(QStringLiteral("claude"))).isExecutable();
+        || QFileInfo(QDir(shimDirectory).filePath(QStringLiteral("claude"))).isExecutable()
+        || QFileInfo(QDir(shimDirectory).filePath(QStringLiteral("opencode"))).isExecutable();
     if (!hasAgentShim) {
         return;
     }

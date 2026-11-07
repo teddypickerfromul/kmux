@@ -90,7 +90,7 @@ std::vector<std::string> executableCandidates(const char *executable)
     return candidates;
 }
 
-std::string agentHooksExecutable(const char *launcherPath)
+std::string siblingExecutable(const char *launcherPath, const char *name)
 {
     for (const std::string &candidate : executableCandidates(launcherPath)) {
         if (access(candidate.c_str(), X_OK) != 0) {
@@ -103,20 +103,26 @@ std::string agentHooksExecutable(const char *launcherPath)
         }
 
         const std::string directory = candidate.substr(0, separator + 1);
-        const std::string sibling = directory + "kmux-agent-hooks";
+        const std::string sibling = directory + name;
         if (access(sibling.c_str(), X_OK) == 0) {
             return sibling;
         }
 
         // Keep compatibility with an earlier layout where transparent shims
         // lived one directory below the public Kmux helpers.
-        const std::string parentSibling = directory + "../kmux-agent-hooks";
+        const std::string parentSibling = directory + "../" + name;
         if (access(parentSibling.c_str(), X_OK) == 0) {
             return parentSibling;
         }
     }
 
-    return std::string("kmux-agent-hooks");
+    return std::string();
+}
+
+std::string agentHooksExecutable(const char *launcherPath)
+{
+    const std::string executable = siblingExecutable(launcherPath, "kmux-agent-hooks");
+    return executable.empty() ? std::string("kmux-agent-hooks") : executable;
 }
 
 bool installTrustedHooks(const char *launcherPath)
@@ -214,6 +220,13 @@ int main(int argc, char **argv)
 
     const std::string agentPid = std::to_string(getpid());
     setenv(KMUX_AGENT_PID_ENV, agentPid.c_str(), 1);
+
+    // Plugins that run in the agent process, such as the opencode one, have no
+    // generated hook script to carry the helper path, so they resolve it here.
+    const std::string projectStatusExecutable = siblingExecutable(argv[0], "kmux-project-status");
+    if (!projectStatusExecutable.empty()) {
+        setenv("KMUX_PROJECT_STATUS_EXECUTABLE", projectStatusExecutable.c_str(), 1);
+    }
 
     std::vector<char *> execArgs;
     execArgs.reserve(args.size() + 1);

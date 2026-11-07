@@ -1307,6 +1307,120 @@ void ViewManagerTest::testProjectWorkspaceCodexIdleReportEndsTurn()
     QCOMPARE(workspaces->projectStatus(project), ProjectWorkspaceContainer::ProjectStatus::Running);
 }
 
+void ViewManagerTest::testProjectWorkspaceOpenCodeTurnTracksPluginEvents()
+{
+    auto mw = MainWindow();
+    auto *viewManager = mw.viewManager();
+    auto *workspaces = viewManager->_workspaceContainer.data();
+    QVERIFY(workspaces != nullptr);
+
+    mw.newTab();
+    auto *project = viewManager->activeContainer();
+    QVERIFY(project != nullptr);
+    auto *terminal = project->activeViewSplitter()->activeTerminalDisplay();
+    QVERIFY(terminal != nullptr);
+    Session *session = terminal->sessionController()->session();
+    QVERIFY(session != nullptr);
+
+    const qlonglong processId = QCoreApplication::applicationPid();
+
+    // A prompt begins a turn and tool events keep it running.
+    session->setProjectStatusForAgentEvent(QStringLiteral("running"),
+                                           processId,
+                                           QStringLiteral("opencode"),
+                                           QStringLiteral("UserPromptSubmit"),
+                                           QStringLiteral("session-1"),
+                                           {},
+                                           {});
+    QCOMPARE(workspaces->projectStatus(project), ProjectWorkspaceContainer::ProjectStatus::Running);
+    session->setProjectStatusForAgentEvent(QStringLiteral("running"),
+                                           processId,
+                                           QStringLiteral("opencode"),
+                                           QStringLiteral("PreToolUse"),
+                                           QStringLiteral("session-1"),
+                                           {},
+                                           {});
+    QCOMPARE(workspaces->projectStatus(project), ProjectWorkspaceContainer::ProjectStatus::Running);
+
+    // A permission request pauses the turn until the plugin reports the answer.
+    session->setProjectStatusForAgentEvent(QStringLiteral("needsInput"),
+                                           processId,
+                                           QStringLiteral("opencode"),
+                                           QStringLiteral("PermissionRequest"),
+                                           QStringLiteral("session-1"),
+                                           {},
+                                           {});
+    QCOMPARE(workspaces->projectStatus(project), ProjectWorkspaceContainer::ProjectStatus::NeedsInput);
+    QCOMPARE(viewManager->_sessionProjectStatuses.value(session).pendingTerminalDecisions, 1);
+    session->setProjectStatusForAgentEvent(QStringLiteral("running"),
+                                           processId,
+                                           QStringLiteral("opencode"),
+                                           QStringLiteral("PermissionReplied"),
+                                           QStringLiteral("session-1"),
+                                           {},
+                                           {});
+    QCOMPARE(workspaces->projectStatus(project), ProjectWorkspaceContainer::ProjectStatus::Running);
+    QCOMPARE(viewManager->_sessionProjectStatuses.value(session).pendingTerminalDecisions, 0);
+
+    // The idle event of the session ends the turn.
+    session->setProjectStatusForAgentEvent(QStringLiteral("idle"),
+                                           processId,
+                                           QStringLiteral("opencode"),
+                                           QStringLiteral("Stop"),
+                                           QStringLiteral("session-1"),
+                                           {},
+                                           {});
+    QCOMPARE(workspaces->projectStatus(project), ProjectWorkspaceContainer::ProjectStatus::Idle);
+
+    // A session error ends the turn too.
+    session->setProjectStatusForAgentEvent(QStringLiteral("running"),
+                                           processId,
+                                           QStringLiteral("opencode"),
+                                           QStringLiteral("UserPromptSubmit"),
+                                           QStringLiteral("session-1"),
+                                           {},
+                                           {});
+    session->setProjectStatusForAgentEvent(QStringLiteral("idle"),
+                                           processId,
+                                           QStringLiteral("opencode"),
+                                           QStringLiteral("StopFailure"),
+                                           QStringLiteral("session-1"),
+                                           {},
+                                           {});
+    QCOMPARE(workspaces->projectStatus(project), ProjectWorkspaceContainer::ProjectStatus::Idle);
+
+    // Escape interrupts the turn, and hooks from in-flight work stay ignored.
+    session->setProjectStatusForAgentEvent(QStringLiteral("running"),
+                                           processId,
+                                           QStringLiteral("opencode"),
+                                           QStringLiteral("UserPromptSubmit"),
+                                           QStringLiteral("session-1"),
+                                           {},
+                                           {});
+    QTest::keyClick(terminal, Qt::Key_Escape);
+    QCOMPARE(workspaces->projectStatus(project), ProjectWorkspaceContainer::ProjectStatus::Idle);
+    QVERIFY(viewManager->_sessionProjectStatuses.value(session).turnInterrupted);
+    session->setProjectStatusForAgentEvent(QStringLiteral("running"),
+                                           processId,
+                                           QStringLiteral("opencode"),
+                                           QStringLiteral("PreToolUse"),
+                                           QStringLiteral("session-1"),
+                                           {},
+                                           {});
+    QCOMPARE(workspaces->projectStatus(project), ProjectWorkspaceContainer::ProjectStatus::Idle);
+
+    // A new prompt after the interrupt begins a new turn.
+    session->setProjectStatusForAgentEvent(QStringLiteral("running"),
+                                           processId,
+                                           QStringLiteral("opencode"),
+                                           QStringLiteral("UserPromptSubmit"),
+                                           QStringLiteral("session-1"),
+                                           {},
+                                           {});
+    QCOMPARE(workspaces->projectStatus(project), ProjectWorkspaceContainer::ProjectStatus::Running);
+    QVERIFY(!viewManager->_sessionProjectStatuses.value(session).turnInterrupted);
+}
+
 void ViewManagerTest::testProjectWorkspaceClaudeDenialDoesNotOverrideStop()
 {
     auto mw = MainWindow();

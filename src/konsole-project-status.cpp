@@ -504,9 +504,10 @@ int main(int argc, char **argv)
     const QString agent = parser.value(agentOption);
     QString event = parser.value(eventOption);
     const bool isClaudeHook = agent.compare(QLatin1String("claude"), Qt::CaseInsensitive) == 0;
+    const bool isOpenCodeHook = agent.compare(QLatin1String("opencode"), Qt::CaseInsensitive) == 0;
     QString status = args.first();
     QJsonObject payload;
-    if (isClaudeHook || parser.isSet(codexPermissionRequestOption) || parser.isSet(claudeStopOption) || parser.isSet(claudeNotificationOption)
+    if (isClaudeHook || isOpenCodeHook || parser.isSet(codexPermissionRequestOption) || parser.isSet(claudeStopOption) || parser.isSet(claudeNotificationOption)
         || parser.isSet(claudeStopFailureOption)) {
         payload = hookPayload();
     }

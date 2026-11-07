@@ -3301,8 +3301,10 @@ void ViewManager::setSessionProjectStatus(Session *session,
     const bool isPreCompact = event.compare(QLatin1String("PreCompact"), Qt::CaseInsensitive) == 0;
     const bool agentChanged = normalizedAgent != previousStatus.agent && (!normalizedAgent.isEmpty() || !previousStatus.agent.isEmpty());
     const bool isClaudeEvent = normalizedAgent == QLatin1String("claude");
+    const bool isOpencodeEvent = normalizedAgent == QLatin1String("opencode");
     const bool isClaudeSubagentEvent = isClaudeEvent && !agentId.trimmed().isEmpty();
-    const bool isSupportedAgent = normalizedAgent == QLatin1String("codex") || normalizedAgent == QLatin1String("claude");
+    const bool isSupportedAgent =
+        normalizedAgent == QLatin1String("codex") || normalizedAgent == QLatin1String("claude") || normalizedAgent == QLatin1String("opencode");
 
     // Hook helpers may finish out of order. Bind Claude's session and prompt
     // identities at their start events, then discard mutations from older work.
@@ -3452,7 +3454,7 @@ void ViewManager::setSessionProjectStatus(Session *session,
         ++pendingTerminalDecisions;
     } else if (isCodexEvent && isPermissionRequest) {
         pendingTerminalDecisions = 0;
-    } else if (isClaudeEvent && projectStatus == ProjectWorkspaceContainer::ProjectStatus::NeedsInput && isPermissionRequest) {
+    } else if ((isClaudeEvent || isOpencodeEvent) && projectStatus == ProjectWorkspaceContainer::ProjectStatus::NeedsInput && isPermissionRequest) {
         if (pendingTerminalDecisionOrigin == PendingTerminalDecisionOrigin::None) {
             statusBeforePendingTerminalDecision = previousStatus.status;
         }
@@ -3515,11 +3517,13 @@ void ViewManager::handleSessionAgentKey(Session *session, TabbedViewContainer *c
     }
 
     // Codex runs its Interrupt hook when a turn is interrupted; Claude reports nothing.
-    if (interruptsTurn && status->agent == QLatin1String("claude")
+    // opencode reports nothing either, and its plugin always reaches Kmux with an
+    // event, so the title heuristic is unnecessary there.
+    if (interruptsTurn && (status->agent == QLatin1String("claude") || status->agent == QLatin1String("opencode"))
         && (status->status == ProjectWorkspaceContainer::ProjectStatus::NeedsInput || status->status == ProjectWorkspaceContainer::ProjectStatus::Running)) {
-        // Claude does not animate its title under tmux, screen, or zellij.
-        // Without the spinner, assume that Escape interrupted the turn.
-        if (claudeTitleActivity(session->userTitle()) == ClaudeTitleActivity::Working) {
+        if (status->agent == QLatin1String("claude") && claudeTitleActivity(session->userTitle()) == ClaudeTitleActivity::Working) {
+            // Claude does not animate its title under tmux, screen, or zellij.
+            // Without the spinner, assume that Escape interrupted the turn.
             watchClaudeEscape(session);
         } else {
             interruptSessionTurn(session, QDeadlineTimer(InterruptedTurnHookGracePeriodMs));
@@ -3623,7 +3627,8 @@ void ViewManager::clearExitedSessionProjectStatuses()
     QSet<TabbedViewContainer *> containersToRefresh;
     for (auto status = _sessionProjectStatuses.begin(); status != _sessionProjectStatuses.end();) {
         Session *session = status.key();
-        const bool isSupportedAgent = status->agent == QLatin1String("codex") || status->agent == QLatin1String("claude");
+        const bool isSupportedAgent =
+            status->agent == QLatin1String("codex") || status->agent == QLatin1String("claude") || status->agent == QLatin1String("opencode");
         bool returnedToShell = false;
         if (isSupportedAgent && session != nullptr && session->isRunning()) {
             const bool foregroundProcessActive = session->isForegroundProcessActive();
@@ -3657,7 +3662,8 @@ void ViewManager::clearExitedSessionProjectStatuses()
 void ViewManager::updateProjectStatusProcessTimer()
 {
     const bool hasTrackedAgent = std::any_of(_sessionProjectStatuses.cbegin(), _sessionProjectStatuses.cend(), [](const SessionProjectStatus &status) {
-        return status.agentProcessId > 0 || status.agent == QLatin1String("codex") || status.agent == QLatin1String("claude");
+        return status.agentProcessId > 0 || status.agent == QLatin1String("codex") || status.agent == QLatin1String("claude")
+            || status.agent == QLatin1String("opencode");
     });
     if (hasTrackedAgent) {
         if (!_projectStatusProcessTimer.isActive()) {

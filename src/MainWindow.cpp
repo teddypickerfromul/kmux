@@ -11,11 +11,15 @@
 // Qt
 #include <QColor>
 #include <QDateTime>
+#include <QDir>
+#include <QFileInfo>
 #include <QGuiApplication>
 #include <QMenu>
 #include <QMenuBar>
 #include <QMouseEvent>
+#include <QProcess>
 #include <QScreen>
+#include <QStandardPaths>
 #include <QStyleHints>
 #include <QWindow>
 #if HAVE_DBUS
@@ -207,7 +211,38 @@ MainWindow::MainWindow()
     applyKonsoleSettings();
     connect(KonsoleSettings::self(), &Konsole::KonsoleSettings::configChanged, this, &Konsole::MainWindow::applyKonsoleSettings);
 
+    ensureAgentPluginsInstalled();
+
     KCrash::initialize();
+}
+
+// The opencode plugin cannot self-install the way Codex and Claude shell hooks
+// do when the agent shim runs: a user's shell configuration may rebuild PATH
+// after Kmux prepends the shim directory, and then the real agent binary runs
+// without the shim. Installing the plugin once at startup keeps the agent
+// launch itself free of configuration work, and the installer writes nothing
+// when the generated plugin already matches.
+void MainWindow::ensureAgentPluginsInstalled()
+{
+    static bool attempted = false;
+    if (attempted || qApp->applicationName() != QLatin1String("kmux")) {
+        return;
+    }
+    attempted = true;
+
+    if (qEnvironmentVariable("KMUX_OPENCODE_HOOKS_DISABLED") == QLatin1String("1")) {
+        return;
+    }
+
+    QString installer = QDir(QCoreApplication::applicationDirPath()).filePath(QStringLiteral("kmux-agent-hooks"));
+    if (!QFileInfo::exists(installer)) {
+        installer = QStandardPaths::findExecutable(QStringLiteral("kmux-agent-hooks"));
+    }
+    if (installer.isEmpty()) {
+        return;
+    }
+
+    QProcess::startDetached(installer, {QStringLiteral("--quiet"), QStringLiteral("install"), QStringLiteral("opencode")});
 }
 
 bool MainWindow::wasWindowGeometrySaved() const

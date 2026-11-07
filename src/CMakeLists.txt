@@ -438,6 +438,22 @@ if(HAVE_DBUS)
             DESTINATION "${KDE_INSTALL_LIBEXECDIR}/kmux/agent-shims"
             RENAME claude)
 
+    add_executable(kmux-opencode konsole-codex.cpp)
+    target_compile_definitions(
+        kmux-opencode
+        PRIVATE
+            KMUX_AGENT_NAME="opencode"
+            KMUX_AGENT_PID_ENV="KMUX_OPENCODE_PID"
+            KMUX_HOOKS_DISABLED_ENV="KMUX_OPENCODE_HOOKS_DISABLED"
+            KMUX_HOOKS_DISABLED_COMPAT_ENV=""
+            KMUX_AGENT_EMBEDDED_SERVER_ARGUMENT=""
+    )
+    ecm_mark_nongui_executable(kmux-opencode)
+    install(TARGETS kmux-opencode ${KDE_INSTALL_TARGETS_DEFAULT_ARGS})
+    install(PROGRAMS "$<TARGET_FILE:kmux-opencode>"
+            DESTINATION "${KDE_INSTALL_LIBEXECDIR}/kmux/agent-shims"
+            RENAME opencode)
+
     add_executable(kmux-agent-hooks konsole-agent-hooks.cpp)
     ecm_mark_nongui_executable(kmux-agent-hooks)
     target_link_libraries(kmux-agent-hooks Qt::Core)
@@ -447,13 +463,14 @@ if(HAVE_DBUS)
             RENAME kmux-agent-hooks)
 
     if(BUILD_TESTING)
-        add_dependencies(AgentHooksTest kmux-agent-hooks kmux-codex kmux-claude kmux-project-status)
+        add_dependencies(AgentHooksTest kmux-agent-hooks kmux-codex kmux-claude kmux-opencode kmux-project-status)
         target_compile_definitions(
             AgentHooksTest
             PRIVATE
                 KMUX_AGENT_HOOKS_EXECUTABLE="$<TARGET_FILE:kmux-agent-hooks>"
                 KMUX_CODEX_EXECUTABLE="$<TARGET_FILE:kmux-codex>"
                 KMUX_CLAUDE_EXECUTABLE="$<TARGET_FILE:kmux-claude>"
+                KMUX_OPENCODE_EXECUTABLE="$<TARGET_FILE:kmux-opencode>"
                 KMUX_PROJECT_STATUS_EXECUTABLE="$<TARGET_FILE:kmux-project-status>"
         )
     endif()

@@ -47,6 +47,7 @@ private Q_SLOTS:
     void testProjectWorkspaceClaudeEscapeKeepsPermissionPrompt();
     void testProjectWorkspaceCodexAutoReviewedPermissionStaysRunning();
     void testProjectWorkspaceCodexIdleReportEndsTurn();
+    void testProjectWorkspaceOpenCodeTurnTracksPluginEvents();
     void testProjectWorkspaceClaudeDenialDoesNotOverrideStop();
     void testProjectWorkspaceClaudeIdlePromptMarksInactiveProject();
     void testProjectWorkspaceClaudeIdlePromptClearsNotification();

@@ -208,6 +208,7 @@ private:
     void removeMenuAccelerators();
     void restoreMenuAccelerators();
     void setupActions();
+    void ensureAgentPluginsInstalled();
     QString activeSessionDir() const;
     void triggerAction(const QString &name) const;
 
